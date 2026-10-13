@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 700" width="600" height="700">
+<rect width="600" height="700" fill="#ffe14d"/>
+<g stroke="#1a1a1a" stroke-width="6" stroke-linejoin="round" stroke-linecap="round">
+<!-- body -->
+<ellipse cx="300" cy="560" rx="210" ry="170" fill="#4a3b33"/>
+<ellipse cx="300" cy="590" rx="120" ry="110" fill="#8a7466"/>
+<!-- left arm down -->
+<path d="M110 500 Q40 600 90 690 L170 690 Q150 600 180 540Z" fill="#4a3b33"/>
+<!-- right arm raised -->
+<path d="M460 520 Q540 430 520 330 L450 330 Q460 420 400 480Z" fill="#4a3b33"/>
+<!-- fist -->
+<rect x="420" y="250" width="120" height="95" rx="35" fill="#8a7466"/>
+<!-- curled fingers -->
+<path d="M425 275 h30 M425 300 h30 M505 275 h30 M505 300 h30" fill="none"/>
+<!-- THE middle finger -->
+<rect x="458" y="130" width="44" height="140" rx="22" fill="#8a7466"/>
+<path d="M466 150 q14 -8 28 0" fill="#e8d7c8"/>
+<path d="M465 200 h30 M465 225 h30" fill="none" stroke-width="4"/>
+<!-- head -->
+<ellipse cx="300" cy="300" rx="175" ry="160" fill="#4a3b33"/>
+<path d="M200 170 l15 -45 l20 40 l20 -50 l18 48 l22 -42 l15 48" fill="#4a3b33"/>
+<!-- ears -->
+<circle cx="125" cy="300" r="35" fill="#8a7466"/>
+<circle cx="475" cy="300" r="35" fill="#8a7466"/>
+<!-- face -->
+<path d="M175 300 Q175 200 300 210 Q425 200 425 300 Q440 430 300 440 Q160 430 175 300Z" fill="#8a7466"/>
+<!-- unibrow -->
+<path d="M200 245 Q250 215 300 255 Q350 215 400 245" fill="none" stroke-width="16"/>
+<!-- googly mismatched eyes -->
+<circle cx="245" cy="285" r="34" fill="#fff"/><circle cx="258" cy="292" r="13" fill="#111"/>
+<circle cx="360" cy="280" r="24" fill="#fff"/><circle cx="350" cy="272" r="10" fill="#111"/>
+<!-- nose -->
+<ellipse cx="300" cy="335" rx="48" ry="28" fill="#5c4a40"/>
+<ellipse cx="282" cy="338" rx="10" ry="8" fill="#111"/><ellipse cx="318" cy="338" rx="10" ry="8" fill="#111"/>
+<!-- snot -->
+<path d="M318 346 q6 25 -2 35 q-10 -5 -4 -35" fill="#9bdc4a" stroke-width="3"/>
+<!-- grin w snaggleteeth -->
+<path d="M215 375 Q300 450 390 370 Q300 410 215 375Z" fill="#5a0f12"/>
+<path d="M245 388 l10 22 l10 -18 M320 395 l8 25 l12 -28 M355 384 l6 14 l8 -18" fill="#fff8c0" stroke-width="3"/>
+<!-- tongue -->
+<path d="M290 405 q15 40 40 10" fill="#ff6b8a" stroke-width="4"/>
+<!-- stink lines & hair tufts -->
+<path d="M60 150 q20 -20 0 -40 q-20 -20 0 -40 M560 520 q20 -20 0 -40 q-20 -20 0 -40" fill="none" stroke="#7a9a2a" stroke-width="5"/>
+</g>
+</svg>

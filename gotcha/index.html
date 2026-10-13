@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>GOTCHA!</title>
+<style>html,body{margin:0;height:100%;background:#ffe14d;overflow:hidden;font-family:Impact,Arial Black,sans-serif;text-align:center}
+h1{margin:0;font-size:16vmin;color:#e0001b;-webkit-text-stroke:3px #000;animation:w .4s infinite alternate}
+img{height:78vh;max-width:100vw;object-fit:contain;animation:b .6s infinite alternate}
+p{margin:0;font-size:4vmin}
+@keyframes w{to{transform:rotate(-4deg) scale(1.08)}}@keyframes b{to{transform:translateY(-12px) rotate(2deg)}}</style></head>
+<body><h1>GOTCHA!</h1><img src="gorilla.png" alt="gorilla"><p>(tap for a word from our sponsor)</p>
+<script>
+document.body.addEventListener('click',()=>{const A=new(window.AudioContext||window.webkitAudioContext)(),t=A.currentTime;
+[[0,220,90],[.25,180,60],[.5,300,40],[.7,90,60]].forEach(([d,f1,f2])=>{const o=A.createOscillator(),g=A.createGain();o.type='sawtooth';
+o.frequency.setValueAtTime(f1,t+d);o.frequency.exponentialRampToValueAtTime(f2,t+d+.25);g.gain.setValueAtTime(.3,t+d);g.gain.exponentialRampToValueAtTime(.001,t+d+.25);
+o.connect(g).connect(A.destination);o.start(t+d);o.stop(t+d+.26)})});
+</script></body></html>
