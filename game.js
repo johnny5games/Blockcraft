@@ -1581,3 +1581,354 @@ const _tap=tapAction;tapAction=function(){if(G.mode==='play'&&iceBoltReady()){co
     if(!a&&!(n&&!n.hostile)&&(m||!raycast(4))){throwIceBolt();return;}}_tap();};
 const _updLife=updateLife;updateLife=function(dt){_updLife(dt);updFeedBtn(dt);updBolts(dt);};
 Object.assign(window.__bc,{CHARS,curChar,setChar,feedTarget,tameNearest,tameAllNearby,throwIceBolt,iceBoltReady,bolts,interactAnimal,tapAction:()=>tapAction(),updateMining:dt=>updateMining(dt),T,animalLikes,isFeedItem,canAttackAnimal});
+// ===== v1.6: Sims-style BUILD MODE (free building, overhead camera) =====
+const BM={on:false,tool:'pan',mat:BN.planks,rmat:BN.roof,h:3,roof:'gable',win:1,tx:0,ty:0,tz:0,yaw:0,pitch:.95,dist:22,undo:[],redo:[],ptrs:new Map(),g:null,drag:null,tw:null,cells:[],last:null};
+const BM_MATS=['planks','dplanks','bplanks','log','spruce','cobble','stone','stonebrick','brick','sandstone','marble','clay','tiles','roof','glass','mossy','snowblock','ice','obsidian','demonbrick','iron_block','gold_block','hay','bookshelf','wool0','wool4'].filter(k=>BN[k]!==undefined).map(k=>BN[k]);
+const BM_TOOLS=[['pan','\u270B','PAN'],['wall','\u2590','WALL'],['floor','\u25A6','FLOOR'],['room','\u2302','ROOM'],['roof','\u25B2','ROOF'],['door','\u25AF','DOOR'],['window','\u25A3','WINDOW'],['stairs','\u25E2','STAIRS'],['erase','\u2716','ERASE']];
+const NATCAT={Nature:1,Ores:1,Hell:1};
+// ---- ghost preview ----
+const GHOSTN=6000;const ghostMat=new THREE.MeshBasicMaterial({color:0x66ff66,transparent:true,opacity:.55,depthWrite:false});
+const ghost=new THREE.InstancedMesh(new THREE.BoxGeometry(1.03,1.03,1.03),ghostMat,GHOSTN);ghost.count=0;ghost.frustumCulled=false;ghost.renderOrder=5;scene.add(ghost);
+const ghostEdge=new THREE.InstancedMesh(new THREE.BoxGeometry(1.06,1.06,1.06),new THREE.MeshBasicMaterial({color:0xffffff,wireframe:true,transparent:true,opacity:.25}),GHOSTN);ghostEdge.count=0;ghostEdge.frustumCulled=false;scene.add(ghostEdge);
+const _gm=new THREE.Matrix4();
+function showGhost(cells,erase){const n=Math.min(GHOSTN,cells.length);for(let i=0;i<n;i++){const c=cells[i];_gm.makeTranslation(c[0]+.5,c[1]+.5,c[2]+.5);ghost.setMatrixAt(i,_gm);ghostEdge.setMatrixAt(i,_gm);}
+  ghost.count=ghostEdge.count=n;ghost.instanceMatrix.needsUpdate=ghostEdge.instanceMatrix.needsUpdate=true;
+  const id=cells.length?cells[0][3]:BM.mat;ghostMat.color.setHex(erase?0xff4040:(id>0&&B[id]&&B[id].tx)?avgColor(B[id].tx[0]):0x66ff66);ghostMat.color.lerp(new THREE.Color(erase?0xff2020:0x60ff60),.2);}
+function hideGhost(){ghost.count=ghostEdge.count=0;BM.cells=[];setCount('');}
+// ---- avatar (your character standing still while you build) ----
+function makeAvatar(){if(BM.g){scene.remove(BM.g);BM.g=null;}const C=CHARS[curChar()];
+  const g=makeNPC({skin:C.skin,hair:C.bald?null:(C.hair||C.skin),shirt:C.shirt,pants:C.pants,shoes:C.shoes,crown:C.crown||C.star,beard:C.beard?C.hair:null,ponytail:C.pony,cape:C.cape,hat:C.hat||C.beanie,skirt:C.gown?C.shirt:null});
+  BM.g=g;g.visible=false;return g;}
+// ---- rays & picking ----
+function scrRay(cx,cy){const o=camera.position.clone();const v=new THREE.Vector3(cx/innerWidth*2-1,-(cy/innerHeight)*2+1,.5).unproject(camera);return {o,d:v.sub(o).normalize()};}
+function ddaHit(o,d,maxD){let x=Math.floor(o.x),y=Math.floor(o.y),z=Math.floor(o.z);const sx=d.x>0?1:-1,sy=d.y>0?1:-1,sz=d.z>0?1:-1;const tdx=Math.abs(1/d.x),tdy=Math.abs(1/d.y),tdz=Math.abs(1/d.z);
+  let tx=(d.x>0?x+1-o.x:o.x-x)*tdx,ty=(d.y>0?y+1-o.y:o.y-y)*tdy,tz=(d.z>0?z+1-o.z:o.z-z)*tdz,n=[0,1,0],t=0;
+  while(t<=maxD){if(y>=0&&y<H){const b=getB(x,y,z);if(b>0&&!LIQ[b]&&(SOLID[b]||B[b].door))return {x,y,z,n,b,t};}else if(y<0)return null;
+    if(tx<ty&&tx<tz){x+=sx;t=tx;tx+=tdx;n=[-sx,0,0];}else if(ty<tz){y+=sy;t=ty;ty+=tdy;n=[0,-sy,0];}else{z+=sz;t=tz;tz+=tdz;n=[0,0,-sz];}}return null;}
+function pickHit(cx,cy){const r=scrRay(cx,cy);return ddaHit(r.o,r.d,320);}
+// start cell: empty cell on top of what you touched, dropped down to its support (ground height under the drag start)
+function pickStart(cx,cy){const h=pickHit(cx,cy);if(!h)return null;let x=h.x+h.n[0],y=h.y+h.n[1],z=h.z+h.n[2];let k=0;while(k<40&&y>1&&!isSolidAt(x,y-1,z)){y--;k++;}return {x,y,z,hit:h,cx,cy};}
+function planeCell(cx,cy,Y){const r=scrRay(cx,cy);if(r.d.y>-1e-4)return null;const t=(Y-r.o.y)/r.d.y;return {x:Math.floor(r.o.x+r.d.x*t),z:Math.floor(r.o.z+r.d.z*t)};}
+// ---- shapes: each returns [[x,y,z,id],...] ----
+function snapLine(s,e,diag){let dx=e.x-s.x,dz=e.z-s.z;const ax=Math.abs(dx),az=Math.abs(dz);
+  if(ax>=2*az||!diag&&ax>=az)dz=0;else if(az>=2*ax||!diag)dx=0;else{const m=Math.max(ax,az);dx=Math.sign(dx)*m;dz=Math.sign(dz)*m;}return {dx,dz};}
+function lineXZ(s,e,diag){const {dx,dz}=snapLine(s,e,diag);const n=Math.max(Math.abs(dx),Math.abs(dz));const out=[];for(let i=0;i<=n;i++)out.push([s.x+(n?Math.round(dx*i/n):0),s.z+(n?Math.round(dz*i/n):0)]);return out;}
+function rectOf(s,e){return [Math.min(s.x,e.x),Math.min(s.z,e.z),Math.max(s.x,e.x),Math.max(s.z,e.z)];}
+function wallCells(s,e,h,id){const c=[];for(const [x,z] of lineXZ(s,e,true))for(let k=0;k<h;k++)c.push([x,s.y+k,z,id]);return c;}
+function floorCells(r,y,id){const c=[];for(let z=r[1];z<=r[3];z++)for(let x=r[0];x<=r[2];x++)c.push([x,y,z,id]);return c;}
+function roomCells(r,y,h,id){const c=floorCells(r,y-1,id);for(let z=r[1];z<=r[3];z++)for(let x=r[0];x<=r[2];x++){const edge=x===r[0]||x===r[2]||z===r[1]||z===r[3];
+  for(let k=0;k<h;k++){if(edge)c.push([x,y+k,z,id]);else if(getB(x,y+k,z)>0)c.push([x,y+k,z,0]);}}return c;}
+function stairCells(s,e,id){const c=[];const L=lineXZ(s,e,false);L.forEach(([x,z],i)=>{for(let k=0;k<=i;k++)c.push([x,s.y+k,z,id]);for(let k=i+1;k<=i+2;k++)if(getB(x,s.y+k,z)>0)c.push([x,s.y+k,z,0]);});return c;}
+function builtB(b){return b>0&&!LIQ[b]&&B[b]&&!NATCAT[B[b].cat]&&!B[b].unbreak&&B[b].key!=='leaves'&&B[b].key!=='pineleaves';}
+const genCache=new Map();function genAt(x,y,z){const k=ck(x>>4,z>>4);let d=genCache.get(k);if(!d){d=genChunk(x>>4,z>>4);genCache.set(k,d);if(genCache.size>24)genCache.delete(genCache.keys().next().value);}return d[(y*CS+(z&15))*CS+(x&15)];}
+function eraseCells(r,yc){const c=[];for(let z=r[1];z<=r[3];z++)for(let x=r[0];x<=r[2];x++)for(let y=Math.max(1,yc-8);y<=Math.min(H-1,yc+12);y++){const b=getB(x,y,z);if(!builtB(b))continue;
+  const g=genAt(x,y,z);c.push([x,y,z,g>0&&B[g]&&NATCAT[B[g].cat]&&!B[g].unbreak?g:0]);}return c;}
+function topBuilt(x,z,y0){for(let y=Math.min(H-1,y0+14);y>=Math.max(1,y0-8);y--){const b=getB(x,y,z);if(b>0&&SOLID[b]&&!NATCAT[B[b].cat])return y;}return -1;}
+function roofCells(r,yHint,style,id){let top=-1,gm=0;for(let x=r[0];x<=r[2];x++)for(const z of [r[1],r[3]]){const t=topBuilt(x,z,yHint);if(t>top){top=t;gm=getB(x,t,z);}}
+  for(let z=r[1];z<=r[3];z++)for(const x of [r[0],r[2]]){const t=topBuilt(x,z,yHint);if(t>top){top=t;gm=getB(x,t,z);}}
+  if(top<0){top=yHint-1;gm=BM.mat;}if(B[gm]&&(B[gm].door||B[gm].key==='glass'))gm=BM.mat;const c=[];
+  if(style==='flat'){for(let z=r[1]-1;z<=r[3]+1;z++)for(let x=r[0]-1;x<=r[2]+1;x++)c.push([x,top+1,z,id]);return {c,top};}
+  const alongX=(r[2]-r[0])>=(r[3]-r[1]);// ridge runs along the longer side
+  const [a0,a1,b0,b1]=alongX?[r[0],r[2],r[1],r[3]]:[r[1],r[3],r[0],r[2]];const P=(a,y,b,v)=>c.push(alongX?[a,y,b,v]:[b,y,a,v]);
+  for(let b=b0-1;b<=b1+1;b++){const k=Math.max(0,Math.min(b-b0,b1-b));for(let a=a0-1;a<=a1+1;a++)P(a,top+1+k,b,id);
+    if(k>0)for(const a of [a0,a1])for(let j=1;j<=k;j++)P(a,top+j,b,gm);}
+  return {c,top};}
+function findRoom(h){if(!h)return null;const offs=[[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1],[2,0],[-2,0],[0,2],[0,-2]];
+  for(const [ox,oz] of offs)for(let y=h.y+1;y>=h.y-6;y--){const x=h.x+ox,z=h.z+oz;if(isSolidAt(x,y,z))continue;
+    const scan=(dx,dz)=>{for(let i=1;i<=32;i++){const b=getB(x+dx*i,y,z+dz*i);if(b<0)return 0;if(SOLID[b]||(b>0&&B[b].door))return builtB(b)?i:0;}return 0;};const a=scan(-1,0),b=scan(1,0),c=scan(0,-1),d=scan(0,1);
+    if(a&&b&&c&&d&&isSolidAt(x,y-1,z))return {r:[x-a,z-c,x+b,z+d],y};}return null;}
+function wallDir(x,y,z){const sx=(isSolidAt(x-1,y,z)?1:0)+(isSolidAt(x+1,y,z)?1:0),sz=(isSolidAt(x,y,z-1)?1:0)+(isSolidAt(x,y,z+1)?1:0);
+  if(sx===sz){const f=Math.abs(Math.sin(BM.yaw))>Math.abs(Math.cos(BM.yaw));return f?'z':'x';}return sx>sz?'x':'z';}
+function doorCells(h){if(!h)return [];let {x,y,z}=h;const b=getB(x,y,z);if(!builtB(b)||!SOLID[b]||B[b].door)return [];const dir=wallDir(x,y,z);
+  const free=yy=>dir==='x'?(!isSolidAt(x,yy,z-1)||!isSolidAt(x,yy,z+1)):(!isSolidAt(x-1,yy,z)||!isSolidAt(x+1,yy,z));
+  while(y>1&&getB(x,y-1,z)===b&&free(y-1))y--;const id=dir==='x'?BN.doorx:BN.doorz;return [[x,y,z,id],[x,y+1,z,id]];}
+function windowCells(h){if(!h)return [];const {x,y,z}=h;const b=getB(x,y,z);if(!builtB(b)||!SOLID[b]||B[b].door||b===BN.glass)return [];const c=[[x,y,z,BN.glass]];
+  if(BM.win===2){const dir=wallDir(x,y,z);const [ax,az]=dir==='x'?[1,0]:[0,1];if(getB(x+ax,y,z+az)===b)c.push([x+ax,y,z+az,BN.glass]);else if(getB(x-ax,y,z-az)===b)c.push([x-ax,y,z-az,BN.glass]);}return c;}
+// cells the current gesture would change (ghost + commit)
+function toolCells(s,cx,cy){const t=BM.tool;if(t==='door'||t==='window'){const h=pickHit(cx,cy);return t==='door'?doorCells(h):windowCells(h);}
+  if(!s)return [];let p=planeCell(cx,cy,s.y)||{x:s.x,z:s.z};if(t==='erase'){const h=pickHit(cx,cy);if(h)p={x:h.x,z:h.z};s={x:s.hit.x,y:s.y,z:s.hit.z,hit:s.hit};}const e={x:p.x,z:p.z,y:s.y};
+  if(t==='wall'){BM.dims=Math.max(Math.abs(e.x-s.x),Math.abs(e.z-s.z))+1+' long x '+BM.h+' high';return wallCells(s,e,BM.h,BM.mat);}
+  const r=rectOf(s,e);BM.dims=(r[2]-r[0]+1)+' x '+(r[3]-r[1]+1);
+  if(t==='floor')return floorCells(r,s.y-1,BM.mat);
+  if(t==='room')return roomCells(r,s.y,BM.h,BM.mat);
+  if(t==='stairs'){BM.dims=lineXZ(s,e,false).length+' steps';return stairCells(s,e,BM.mat);}
+  if(t==='erase')return eraseCells(r,s.hit.y);
+  if(t==='roof'){let rr=r,yh=s.y;if(r[0]===r[2]&&r[1]===r[3]){const f=findRoom(s.hit);if(!f)return [];rr=f.r;yh=f.y;}BM.dims=(rr[2]-rr[0]+1)+' x '+(rr[3]-rr[1]+1)+' '+BM.roof;return roofCells(rr,yh,BM.roof,BM.rmat).c;}
+  return [];}
+function effective(cells){const out=[],seen=new Set();for(const c of cells){const k=c[0]+','+c[1]+','+c[2];if(seen.has(k))continue;seen.add(k);const o=getB(c[0],c[1],c[2]);
+  if(o<0||o===c[3]||(o>0&&B[o].unbreak)||c[1]<1||c[1]>=H)continue;if(c[3]&&SOLID[c[3]]&&intersectsPlayer(c[0],c[1],c[2]))continue;out.push(c);}return out;}
+// ---- apply / undo / redo (free: no inventory cost) ----
+function applyCells(cells,label){const list=[];for(const c of effective(cells)){const o=getB(c[0],c[1],c[2]);if(setB(c[0],c[1],c[2],c[3])!==false)list.push([c[0],c[1],c[2],o,c[3]]);}
+  if(!list.length){toast('Nothing to change here');return 0;}BM.undo.push({label,list});if(BM.undo.length>60)BM.undo.shift();BM.redo.length=0;
+  G.stats.placed+=list.filter(c=>c[4]).length;sfx(list.every(c=>!c[4])?'break':'place');toast(label+': '+list.length+' block'+(list.length>1?'s':''));updBMBtns();return list.length;}
+function bmUndo(){const e=BM.undo.pop();if(!e){toast('Nothing to undo');return false;}for(let i=e.list.length-1;i>=0;i--){const c=e.list[i];setB(c[0],c[1],c[2],c[3]);}BM.redo.push(e);sfx('break');toast('Undo '+e.label);updBMBtns();return true;}
+function bmRedo(){const e=BM.redo.pop();if(!e){toast('Nothing to redo');return false;}for(const c of e.list)setB(c[0],c[1],c[2],c[4]);BM.undo.push(e);sfx('place');toast('Redo '+e.label);updBMBtns();return true;}
+// ---- camera ----
+const _bmObj=new THREE.PerspectiveCamera();
+function bmPose(){const cp=Math.cos(BM.pitch);_bmObj.position.set(BM.tx+Math.sin(BM.yaw)*cp*BM.dist,BM.ty+Math.sin(BM.pitch)*BM.dist,BM.tz+Math.cos(BM.yaw)*cp*BM.dist);_bmObj.lookAt(BM.tx,BM.ty,BM.tz);return {pos:_bmObj.position.clone(),q:_bmObj.quaternion.clone()};}
+function eyePose(){const p=G.p;return {pos:new THREE.Vector3(p.x,p.y+1.62,p.z),q:new THREE.Quaternion().setFromEuler(new THREE.Euler(p.pitch,p.yaw,0,'YXZ'))};}
+function clampTarget(){const R=(ST.rd+1)*16,dx=BM.tx-G.p.x,dz=BM.tz-G.p.z,l=Math.hypot(dx,dz);if(l>R){BM.tx=G.p.x+dx/l*R;BM.tz=G.p.z+dz/l*R;}BM.dist=Math.max(6,Math.min(80,BM.dist));}
+function panBy(dx,dy){const s=BM.dist/Math.max(300,innerHeight)*1.5;const c=Math.cos(BM.yaw),n=Math.sin(BM.yaw);BM.tx+=-dx*s*c-dy*s*n;BM.tz+=dx*s*n-dy*s*c;clampTarget();}
+function groundAt(x,z){const ch=getChunk(Math.floor(x)>>4,Math.floor(z)>>4);return ch?ch.top[(Math.floor(z)&15)*16+(Math.floor(x)&15)]+1:BM.ty;}
+function updBuildCam(dt){if(BM.on){const gy=groundAt(BM.tx,BM.tz);BM.ty+=(Math.max(gy,SEA)-BM.ty)*Math.min(1,dt*4);}
+  const tw=BM.tw;let to=BM.on?bmPose():eyePose();
+  if(tw){tw.t+=dt;const f=Math.min(1,tw.t/tw.dur),e=f*f*(3-2*f);camera.position.copy(tw.pos).lerp(to.pos,e);camera.quaternion.copy(tw.q).slerp(to.q,e);if(f>=1)BM.tw=null;}
+  else{camera.position.copy(to.pos);camera.quaternion.copy(to.q);}
+  if(BM.g){BM.g.visible=BM.on||!!BM.tw;if(BM.g.visible){BM.g.position.set(G.p.x,G.p.y,G.p.z);BM.g.rotation.y=G.p.yaw;}}}
+function startTween(dur){BM.tw={t:0,dur,pos:camera.position.clone(),q:camera.quaternion.clone()};}
+// ---- enter / exit ----
+function enterBuild(){if(G.mode!=='play'||G.dead||BM.on)return false;resetTouches();BM.on=true;BM.tx=G.p.x;BM.tz=G.p.z;BM.ty=Math.max(G.p.y,groundAt(G.p.x,G.p.z)-1);BM.yaw=G.p.yaw;BM.dist=22;BM.pitch=.95;
+  G.p.vx=G.p.vy=G.p.vz=0;makeAvatar();startTween(.6);$('hud').classList.add('building');$('bmLayer').style.display='block';$('buildBtn').innerHTML='&#10004; Done';
+  selBox.visible=crackBox.visible=false;updBMBtns();toast('Build Mode: free building. Pick a tool below');return true;}
+function exitBuild(instant){if(!BM.on&&!BM.tw)return false;const was=BM.on;BM.on=false;BM.ptrs.clear();BM.drag=null;hideGhost();$('hud').classList.remove('building');$('bmLayer').style.display='none';$('bmMats').style.display='none';$('buildBtn').innerHTML='&#9874; Build';
+  if(instant){BM.tw=null;if(BM.g)BM.g.visible=false;}else if(was)startTween(.7);G.p.fallY=G.p.y;lastT=performance.now();resetTouches();return true;}
+function toggleBuild(){if(BM.on)exitBuild();else enterBuild();}
+// ---- UI ----
+function setCount(t){const e=$('bmCount');e.textContent=t;e.style.display=t?'block':'none';}
+function updBMBtns(){document.querySelectorAll('#bmBar [data-t]').forEach(b=>b.classList.toggle('sel',b.dataset.t===BM.tool));
+  const t=BM.tool,m=t==='roof'?BM.rmat:BM.mat;$('bmMatBtn').style.backgroundImage=`url(${blockIcon(m)})`;$('bmMatNm').textContent=B[m].name;
+  const show=(id,v)=>{$(id).style.display=v?'':'none';};show('bmMatW',!['pan','erase','door','window'].includes(t));show('bmHW',t==='wall'||t==='room');show('bmRoofW',t==='roof');show('bmWinW',t==='window');
+  $('bmH').textContent=BM.h;$('bmRoofS').textContent=BM.roof==='gable'?'Gabled':'Flat';$('bmWinS').textContent=BM.win===2?'2x1':'1x1';
+  $('bmUndo').disabled=!BM.undo.length;$('bmRedo').disabled=!BM.redo.length;
+  const hint={pan:'Drag to move the camera \u00b7 pinch to zoom \u00b7 two fingers to rotate',wall:'Drag from start to end to lay a wall',floor:'Drag a rectangle to fill a floor',room:'Drag a rectangle: 4 walls + floor',roof:'Tap inside a room or drag over it',door:'Tap a wall to put in a door',window:'Tap a wall to put in a window',stairs:'Drag in the direction the stairs go up',erase:'Drag over what you built to remove it'}[t];$('bmHint').textContent=hint;}
+function setTool(t){BM.tool=t;hideGhost();$('bmMats').style.display='none';updBMBtns();}
+function renderMats(){const L=$('bmMats');L.innerHTML='';const cur=BM.tool==='roof'?BM.rmat:BM.mat;for(const id of BM_MATS){const b=document.createElement('button');b.className='bmm'+(id===cur?' sel':'');b.style.backgroundImage=`url(${blockIcon(id)})`;b.title=B[id].name;b.innerHTML=`<span>${esc(B[id].name)}</span>`;b.dataset.id=id;
+  bindTap(b,()=>{if(BM.tool==='roof')BM.rmat=id;else BM.mat=id;L.style.display='none';updBMBtns();});L.appendChild(b);}}
+(function buildUI(){const hud=$('hud');
+  const bb=document.createElement('button');bb.className='hbtn';bb.id='buildBtn';bb.innerHTML='&#9874; Build';$('gearBtn').before(bb);bindTap(bb,()=>{if(!stack.length)toggleBuild();});
+  const lay=document.createElement('div');lay.id='bmLayer';$('touch').after(lay);
+  const bar=document.createElement('div');bar.id='bmBar';bar.innerHTML=BM_TOOLS.map(([k,i,n])=>`<button data-t="${k}">${i}<small>${n}</small></button>`).join('')+`<button id="bmUndo">&#8630;<small>UNDO</small></button><button id="bmRedo">&#8631;<small>REDO</small></button>`;hud.appendChild(bar);
+  const opt=document.createElement('div');opt.id='bmOpt';opt.innerHTML=`<span id="bmMatW"><button id="bmMatBtn"></button><b id="bmMatNm"></b></span><span id="bmHW">Height <button id="bmHm">&minus;</button><b id="bmH">3</b><button id="bmHp">+</button></span><span id="bmRoofW">Style <button id="bmRoofS">Gabled</button></span><span id="bmWinW">Size <button id="bmWinS">1x1</button></span><span id="bmHint"></span>`;hud.appendChild(opt);
+  const side=document.createElement('div');side.id='bmSide';side.innerHTML=`<button id="bmRotL">&#10226;</button><button id="bmRotR">&#10227;</button><button id="bmZin">+</button><button id="bmZout">&minus;</button><button id="bmMe">&#9678;</button>`;hud.appendChild(side);
+  const cnt=document.createElement('div');cnt.id='bmCount';hud.appendChild(cnt);const mats=document.createElement('div');mats.id='bmMats';hud.appendChild(mats);
+  bar.querySelectorAll('[data-t]').forEach(b=>bindTap(b,()=>setTool(b.dataset.t)));bindTap($('bmUndo'),()=>bmUndo());bindTap($('bmRedo'),()=>bmRedo());
+  bindTap($('bmMatBtn'),()=>{const v=mats.style.display==='grid';if(!v)renderMats();mats.style.display=v?'none':'grid';});
+  bindTap($('bmHm'),()=>{BM.h=Math.max(1,BM.h-1);updBMBtns();});bindTap($('bmHp'),()=>{BM.h=Math.min(6,BM.h+1);updBMBtns();});
+  bindTap($('bmRoofS'),()=>{BM.roof=BM.roof==='gable'?'flat':'gable';updBMBtns();});bindTap($('bmWinS'),()=>{BM.win=BM.win===2?1:2;updBMBtns();});
+  bindTap($('bmRotL'),()=>{BM.yaw+=Math.PI/4;});bindTap($('bmRotR'),()=>{BM.yaw-=Math.PI/4;});bindTap($('bmZin'),()=>{BM.dist/=1.25;clampTarget();});bindTap($('bmZout'),()=>{BM.dist*=1.25;clampTarget();});
+  bindTap($('bmMe'),()=>{BM.tx=G.p.x;BM.tz=G.p.z;});
+  // gestures
+  const P=BM.ptrs;let gest=null,mode=null;
+  const two=()=>{const [a,b]=[...P.values()];return {d:Math.hypot(a.x-b.x,a.y-b.y),ang:Math.atan2(b.y-a.y,b.x-a.x),mx:(a.x+b.x)/2,my:(a.y+b.y)/2};};
+  lay.addEventListener('pointerdown',e=>{if(!BM.on||stack.length)return;e.preventDefault();mats.style.display='none';P.set(e.pointerId,{x:e.clientX,y:e.clientY,sx:e.clientX,sy:e.clientY});try{lay.setPointerCapture(e.pointerId);}catch(_){}
+    if(P.size===1){if(BM.tool==='pan')mode='pan';else if(BM.tool==='furn'){mode='furn';furnDown(e.clientX,e.clientY);}else{mode='draw';BM.drag={id:e.pointerId,s:BM.tool==='door'||BM.tool==='window'?null:pickStart(e.clientX,e.clientY)};bmPreview(e.clientX,e.clientY);}}
+    else if(P.size===2){if(mode==='furn')furnUp(0,0,false);if(mode==='draw'){BM.drag=null;hideGhost();}mode='gest';gest=two();}});
+  lay.addEventListener('pointermove',e=>{const q=P.get(e.pointerId);if(!q||!BM.on)return;const dx=e.clientX-q.x,dy=e.clientY-q.y;q.x=e.clientX;q.y=e.clientY;
+    if(mode==='pan')panBy(dx,dy);else if(mode==='furn')furnMove(e.clientX,e.clientY);else if(mode==='draw'&&BM.drag&&BM.drag.id===e.pointerId)bmPreview(e.clientX,e.clientY);
+    else if(mode==='gest'&&P.size>=2){const g=two();if(gest.d>10&&g.d>10){BM.dist*=gest.d/g.d;}BM.yaw-=(g.ang-gest.ang);panBy(g.mx-gest.mx,g.my-gest.my);clampTarget();gest=g;}});
+  const up=e=>{if(!P.has(e.pointerId))return;P.delete(e.pointerId);if(mode==='furn'){furnUp(e.clientX,e.clientY,e.type==='pointerup');}if(mode==='draw'&&BM.drag&&BM.drag.id===e.pointerId){if(e.type==='pointerup')bmCommit(e.clientX,e.clientY);BM.drag=null;hideGhost();}
+    if(!P.size)mode=null;else if(mode==='gest'&&P.size===1)mode='idle';};
+  lay.addEventListener('pointerup',up);lay.addEventListener('pointercancel',up);
+  lay.addEventListener('wheel',e=>{if(!BM.on)return;e.preventDefault();BM.dist*=e.deltaY>0?1.12:1/1.12;clampTarget();},{passive:false});})();
+function bmPreview(cx,cy){const d=BM.drag;if(!d)return;const cells=effective(toolCells(d.s,cx,cy));BM.cells=cells;showGhost(cells,BM.tool==='erase');
+  const nm={wall:'Wall',floor:'Floor',room:'Room',roof:'Roof',door:'Door',window:'Window',stairs:'Stairs',erase:'Erase'}[BM.tool];
+  setCount(cells.length?`${nm}${BM.tool==='door'||BM.tool==='window'?'':' '+BM.dims} \u00b7 ${cells.length} block${cells.length>1?'s':''}`:(BM.tool==='roof'?'Drag over the room (or tap inside it)':nm+': nothing here'));}
+function bmCommit(cx,cy){const d=BM.drag;if(!d)return 0;const cells=toolCells(d.s,cx,cy);const nm={wall:'Wall',floor:'Floor',room:'Room',roof:'Roof',door:'Door',window:'Window',stairs:'Stairs',erase:'Erase'}[BM.tool];
+  if(!cells.length){if(BM.tool==='door'||BM.tool==='window')toast('Tap a wall');else if(BM.tool==='roof')toast('Drag over the room or tap inside it');return 0;}return applyCells(cells,nm);}
+// scripted gesture for tests: screen points
+function bmDo(tool,a,b){setTool(tool);BM.drag={id:-1,s:tool==='door'||tool==='window'?null:pickStart(a[0],a[1])};const n=bmCommit((b||a)[0],(b||a)[1]);BM.drag=null;return n;}
+function worldToScreen(x,y,z){const v=new THREE.Vector3(x,y,z).project(camera);return [(v.x+1)/2*innerWidth,(1-v.y)/2*innerHeight];}
+// ---- hooks into the game loop ----
+const _bUpdP=updatePlayer;updatePlayer=function(dt){if(BM.on||BM.tw){G.p.vx=G.p.vy=G.p.vz=0;G.p.fallY=G.p.y;updBuildCam(Math.min(dt,.1));return;}_bUpdP(dt);};
+const _bUpdM=updateMining;updateMining=function(dt){if(BM.on||BM.tw){selBox.visible=crackBox.visible=false;$('ring').style.opacity=0;return;}_bUpdM(dt);};
+const _bUpdC=updateChunks;updateChunks=function(ms){if(!BM.on)return _bUpdC(ms);const p=G.p,x=p.x,y=p.y,z=p.z;p.x=BM.tx;p.z=BM.tz;p.y=BM.ty;try{_bUpdC(ms);}finally{p.x=x;p.y=y;p.z=z;}};
+const _bEnv=updateEnv;updateEnv=function(dt){if(!BM.on)return _bEnv(dt);const p=G.p,x=p.x,y=p.y,z=p.z;p.x=BM.tx;p.z=BM.tz;p.y=BM.ty;try{_bEnv(dt);}finally{p.x=x;p.y=y;p.z=z;}};
+const _bHurt=hurt;hurt=function(n,why){if(BM.on)return;_bHurt(n,why);};
+const _bVM=updViewModel;updViewModel=function(dt){_bVM(dt);if(BM.on||BM.tw)vm.visible=false;};
+const _bGoT=goTitle;goTitle=function(){exitBuild(true);_bGoT();};
+const _bStart=startWorld;startWorld=function(a,b){exitBuild(true);BM.undo.length=BM.redo.length=0;genCache.clear();return _bStart(a,b);};
+const _bBack=window.bcBack;window.bcBack=function(){if(BM.on&&!stack.length){if($('bmMats').style.display==='grid'){$('bmMats').style.display='none';return true;}exitBuild();return true;}return _bBack();};window.dhBack=window.bcBack;
+// doors: tap one in play mode to open/close it (any held item, even an empty hand)
+const _bTap=tapAction;tapAction=function(){if(G.mode==='play'&&!BM.on){const t=raycast(5);if(t&&B[t.b].door){const n=npcUnderCrosshair(),m=mobUnderCrosshair(),a=animalUnderCrosshair();const c=[n,m,a].filter(Boolean).find(e=>eyeDist(e)<t.t+.3);if(!c){toggleDoor(t.x,t.y,t.z);G.doorToggles=(G.doorToggles||0)+1;return;}}}_bTap();};
+addEventListener('keydown',e=>{if(G.mode!=='play'||stack.length)return;if(e.code==='KeyB')toggleBuild();if(BM.on&&(e.ctrlKey||e.metaKey)&&e.code==='KeyZ')bmUndo();if(BM.on&&(e.ctrlKey||e.metaKey)&&e.code==='KeyY')bmRedo();});
+Object.assign(window.__bc,{BM,enterBuild,exitBuild,toggleBuild,setTool,bmDo,bmUndo,bmRedo,worldToScreen,pickStart,pickHit,toolCells,applyCells,roofCells,findRoom,doorCells,windowCells,camera,toggleDoor,tapAction:()=>tapAction()});
+// ===== v1.6: Sims-style FURNITURE (catalog, place/rotate/move/erase, saved with the world, usable in play mode) =====
+// models: boxes in 1/16 block units [x0,y0,z0,x1,y1,z1,color,tag]; front faces local +z, back at z=0
+const WD=0x9a6a3c,WDD=0x6a4424,WH=0xf2f2ee,MT=0xb8bcc4,BK=0x1c1c22;
+const FURN={
+ bed:{n:'Bed',c:'Bedroom',use:'bed',b:[[0,0,0,16,6,32,WD],[0,0,0,16,16,2,WDD],[1,6,2,15,9,31,WH],[1,6,11,15,10,31,0x3a6ac8],[3,9,3,13,11,9,0xffffff]]},
+ nightstand:{n:'Nightstand',c:'Bedroom',b:[[2,0,2,14,10,14,WD],[3,4,14,13,8,14.6,WDD],[7.5,5.5,14.6,8.5,6.5,15.2,0xd8c060],[6,10,6,10,11,10,0xe0d0a0],[7.5,11,7.5,8.5,14,8.5,MT],[5.5,14,5.5,10.5,17,10.5,0xfff0b0,'glow']]},
+ dresser:{n:'Dresser',c:'Bedroom',b:[[0,0,2,32,16,15,WD],[1,1,15,31,5,15.5,WDD],[1,6,15,31,10,15.5,WDD],[1,11,15,31,15,15.5,WDD],[14,2.5,15.5,18,3.5,16,0xd8c060],[14,7.5,15.5,18,8.5,16,0xd8c060],[14,12.5,15.5,18,13.5,16,0xd8c060]]},
+ couch:{n:'Couch',c:'Living',use:'sit',sy:7,b:[[0,0,2,32,6,15,0x6a3a8a],[2,6,4,30,8,15,0x8a5aaa],[0,6,1,32,16,5,0x6a3a8a],[0,6,2,3,11,15,0x5a2a7a],[29,6,2,32,11,15,0x5a2a7a]]},
+ armchair:{n:'Armchair',c:'Living',use:'sit',sy:7,b:[[0,0,2,16,6,15,0x3a7a5a],[2,6,4,14,8,15,0x5a9a7a],[0,6,1,16,16,5,0x3a7a5a],[0,6,2,3,11,15,0x2a6a4a],[13,6,2,16,11,15,0x2a6a4a]]},
+ coffee:{n:'Coffee Table',c:'Living',b:[[1,6,3,31,7.5,13,WD],[2,0,4,4,6,6,WDD],[28,0,4,30,6,6,WDD],[2,0,10,4,6,12,WDD],[28,0,10,30,6,12,WDD],[12,7.5,6,16,9,10,0xd04040]]},
+ tv:{n:'TV',c:'Living',use:'tv',b:[[1,0,3,31,7,13,BK],[3,7,7,29,23,9,0x222228],[4,8,9,28,22,9.4,0x30343c,'screen']]},
+ shelf:{n:'Bookshelf',c:'Living',b:[[0,0,2,16,30,16,WD],[1,1,8,15,9,15,WDD],[1,11,8,15,19,15,WDD],[1,21,8,15,29,15,WDD],[2,1,9,5,8,15.2,0xc03030],[5,1,9,8,7,15.2,0x3050c0],[9,1,9,12,8,15.2,0x30a050],[2,11,9,6,18,15.2,0xe0a020],[7,11,9,10,17,15.2,0x7040a0],[11,11,9,14,18,15.2,0xc03030],[3,21,9,7,28,15.2,0x2a8ac0],[9,21,9,13,27,15.2,0xa05020]]},
+ rug:{n:'Rug',c:'Living',flat:1,b:[[0,0,0,32,.6,32,0xa8302a],[3,0,3,29,.8,29,0xd8a040],[6,0,6,26,1,26,0xa8302a]]},
+ lamp:{n:'Floor Lamp',c:'Living',use:'lamp',b:[[5,0,5,11,1.5,11,BK],[7.5,1.5,7.5,8.5,22,8.5,MT],[4,20,4,12,27,12,0xfff0b0,'glow']]},
+ plant:{n:'Plant',c:'Living',b:[[5,0,5,11,6,11,0xb0603a],[4,6,4,12,12,12,0x3a9a3a],[6,10,2,10,16,8,0x2e8a2e],[3,9,8,9,14,13,0x4aaa4a],[8,12,7,13,18,12,0x3a9a3a]]},
+ fridge:{n:'Fridge',c:'Kitchen',use:'fridge',b:[[1,0,2,15,30,15,WH],[1,19,15,15,19.6,15.3,0xc8c8c8],[12,20,15,13,27,16,MT],[12,8,15,13,17,16,MT]]},
+ stove:{n:'Stove',c:'Kitchen',use:'stove',b:[[1,0,1,15,14,15,0xd8d8d8],[1,14,1,15,14.5,15,0x303030],[3,14.5,3,7,15,7,BK],[9,14.5,3,13,15,7,BK],[3,14.5,9,7,15,13,BK],[9,14.5,9,13,15,13,BK],[3,3,15,13,10,15.3,0x202028],[1,14,1,15,18,2,0xc8c8c8]]},
+ counter:{n:'Counter',c:'Kitchen',b:[[0,0,1,16,14,15,WD],[0,14,0,16,15.5,16,0xd8d4cc],[2,2,15,14,12,15.4,WDD],[7,8,15.4,9,9,16,0xd8c060]]},
+ ksink:{n:'Kitchen Sink',c:'Kitchen',use:'sink',b:[[0,0,1,16,14,15,WD],[0,14,0,16,15.5,16,0xd8d4cc],[3,14.6,4,13,15.6,13,0x8a9aa8],[7,15.5,1,9,20,3,MT],[7,18,3,9,19,7,MT]]},
+ table:{n:'Dining Table',c:'Kitchen',b:[[0,11,0,32,12.5,16,WD],[1,0,1,3,11,3,WDD],[29,0,1,31,11,3,WDD],[1,0,13,3,11,15,WDD],[29,0,13,31,11,15,WDD]]},
+ chair:{n:'Chair',c:'Kitchen',use:'sit',sy:8,b:[[3,7,3,13,8.5,13,WD],[3,0,3,5,7,5,WDD],[11,0,3,13,7,5,WDD],[3,0,11,5,7,13,WDD],[11,0,11,13,7,13,WDD],[3,8.5,3,13,19,4.5,WD]]},
+ toilet:{n:'Toilet',c:'Bath',use:'toilet',sy:8,b:[[5,0,5,11,6,12,WH],[4,6,4,12,8,14,WH],[5,7.6,6,11,8.2,13,0x8ac8e8],[4,6,1,12,15,4,WH],[6,15,1.5,10,15.6,3.5,0xd0d0d0]]},
+ tub:{n:'Bath / Shower',c:'Bath',use:'tub',b:[[0,0,1,32,9,15,WH],[2,6,3,30,8.6,13,0x5ab0e8],[1,0,1,2,30,2,MT],[1,28,1,8,29,2,MT],[6,25,1,9,28,4,MT]]},
+ bsink:{n:'Bathroom Sink',c:'Bath',use:'sink',b:[[6.5,0,4,9.5,10,7,WH],[3,10,1,13,13,12,WH],[5,12.4,3,11,13.2,10,0x8ac8e8],[7.5,13,1.5,8.5,16,3,MT]]},
+ mirror:{n:'Mirror',c:'Bath',wall:1,b:[[3,4,0,13,15,.8,WD],[4,5,.8,12,14,1.1,0xd8f0ff]]},
+ painting:{n:'Painting',c:'Decor',wall:1,b:[[1,4,0,15,13,.8,0x8a5a2a],[2,5,.8,14,12,1.1,0x7ab8e8],[2,5,.8,14,7.5,1.15,0x4a9a3a],[9,8,.8,12,11,1.2,0xffe060]]},
+ painting2:{n:'Portrait',c:'Decor',wall:1,b:[[3,3,0,13,15,.8,0xc8a040],[4,4,.8,12,14,1.1,0x2a2a4a],[6,7,.8,10,12,1.2,0xe8b890],[5,4,.8,11,7,1.2,0xa03030]]},
+ clock:{n:'Clock',c:'Decor',wall:1,use:'clock',b:[[4,6,0,12,14,1,0x8a5a2a],[5,7,1,11,13,1.3,0xf8f4e0],[7.6,10,1.3,8.4,12.5,1.5,BK],[8,9.6,1.3,10.5,10.4,1.5,BK]]},
+ curtains:{n:'Curtains',c:'Decor',wall:1,b:[[0,15,0,16,15.6,2,MT],[0,2,1,5,15,2,0xc03048],[11,2,1,16,15,2,0xc03048]]}};
+const FCATS=['Bedroom','Living','Kitchen','Bath','Decor'];
+const FM={items:new Map(),nid:1,sel:'couch',cat:'Living',r:0,ghost:null,ghostK:'',down:null,last:null};
+const fMats={};const fMat=(c,tag)=>{const k=c+(tag||'');return fMats[k]||(fMats[k]=tag==='glow'?new THREE.MeshBasicMaterial({color:c}):new THREE.MeshLambertMaterial({color:c}));};
+const fGeo=new THREE.BoxGeometry(1,1,1);
+const ghostFMat=new THREE.MeshBasicMaterial({color:0x60ff60,transparent:true,opacity:.5,depthWrite:false});
+function furnModel(k,ghostM){const d=FURN[k],g=new THREE.Group(),inner=new THREE.Group();inner.position.set(-.5,0,-.5);g.add(inner);
+  for(const q of d.b){const m=new THREE.Mesh(fGeo,ghostM||(q[7]==='screen'?new THREE.MeshBasicMaterial({color:q[6]}):fMat(q[6],q[7])));m.scale.set((q[3]-q[0])/16,Math.max(.02,(q[4]-q[1])/16),Math.max(.02,(q[5]-q[2])/16));m.position.set((q[0]+q[3])/32,(q[1]+q[4])/32,(q[2]+q[5])/32);if(q[7]==='screen')g.userData.screen=m;inner.add(m);}
+  if(ghostM)g.renderOrder=6;return g;}
+function placeGroup(g,f){g.position.set(f.x+.5,f.y+(FURN[f.k].flat?.01:0),f.z+.5);g.rotation.y=f.r*Math.PI/2;}
+function furnSet(id,st){const old=FM.items.get(id);if(old){scene.remove(old.g);FM.items.delete(id);}
+  if(st){const f={id,k:st.k,x:st.x,y:st.y,z:st.z,r:st.r&3,on:false,g:furnModel(st.k)};f.g.userData.fid=id;f.g.traverse(o=>o.userData.fid=id);placeGroup(f.g,f);scene.add(f.g);FM.items.set(id,f);FM.nid=Math.max(FM.nid,id+1);return f;}return null;}
+const fState=f=>f?{k:f.k,x:f.x,y:f.y,z:f.z,r:f.r}:null;
+function furnClear(){for(const f of FM.items.values())scene.remove(f.g);FM.items.clear();FM.nid=1;FM.last=null;G.sit=null;}
+function furnOp(label,changes){if(!changes.length)return 0;for(const c of changes)furnSet(c.id,c.a);BM.undo.push({label,list:[],f:changes});if(BM.undo.length>60)BM.undo.shift();BM.redo.length=0;sfx('place');updBMBtns();return changes.length;}
+function furnAdd(k,x,y,z,r){const id=FM.nid++;furnOp('Place '+FURN[k].n,[{id,b:null,a:{k,x,y,z,r}}]);toast(FURN[k].n+' placed');FM.last=id;return FM.items.get(id);}
+function furnMoveTo(f,x,y,z,r){const b=fState(f);furnOp('Move '+FURN[f.k].n,[{id:f.id,b,a:{k:f.k,x,y,z,r}}]);FM.last=f.id;}
+function furnRotate(f){if(!f)return false;const b=fState(f);furnOp('Rotate',[{id:f.id,b,a:Object.assign({},b,{r:(f.r+1)&3})}]);FM.last=f.id;toast('Rotated '+FURN[f.k].n);return true;}
+function furnRemove(list){const ch=list.map(f=>({id:f.id,b:fState(f),a:null}));const n=furnOp('Erase furniture',ch);if(n)toast('Removed '+n+' furniture');return n;}
+// picking
+const _fr=new THREE.Raycaster();
+function furnAtRay(o,d,maxD){_fr.set(o,d);_fr.far=maxD||300;const objs=[];for(const f of FM.items.values())objs.push(f.g);const h=_fr.intersectObjects(objs,true)[0];return h?{f:FM.items.get(h.object.userData.fid),t:h.distance}:null;}
+function furnAtScreen(cx,cy){const r=scrRay(cx,cy);return furnAtRay(r.o,r.d);}
+// where would a new piece go
+function furnSpot(cx,cy,k){const d=FURN[k];const h=pickHit(cx,cy);if(!h)return null;
+  if(d.wall){if(h.n[1]!==0||!SOLID[h.b])return null;const x=h.x+h.n[0],z=h.z+h.n[2];const r=Math.round(Math.atan2(h.n[0],h.n[2])/(Math.PI/2))&3;return {x,y:h.y,z,r};}
+  const s=pickStart(cx,cy);if(!s)return null;return {x:s.x,y:s.y,z:s.z,r:FM.r};}
+function showFGhost(sp,k,ok){if(FM.ghostK!==k){if(FM.ghost)scene.remove(FM.ghost);FM.ghost=furnModel(k,ghostFMat);FM.ghostK=k;scene.add(FM.ghost);}
+  FM.ghost.visible=!!sp;if(sp){placeGroup(FM.ghost,{k,x:sp.x,y:sp.y,z:sp.z,r:sp.r});ghostFMat.color.setHex(ok===false?0xff5050:0x60ff60);}}
+function hideFGhost(){if(FM.ghost)FM.ghost.visible=false;}
+// gesture handlers (called from the build layer)
+function furnDown(cx,cy){$('bmFurnCat').style.display='none';const hit=furnAtScreen(cx,cy);FM.down={cx,cy,f:hit&&hit.f,moved:false,sp:null};
+  if(hit){FM.last=hit.f.id;setCount(FURN[hit.f.k].n+' \u00b7 tap to rotate, drag to move');}else furnMove(cx,cy);}
+function furnMove(cx,cy){const D=FM.down;if(!D)return;if(Math.hypot(cx-D.cx,cy-D.cy)>10)D.moved=true;
+  if(D.f){if(!D.moved)return;D.f.g.visible=false;const sp=furnSpot(cx,cy,D.f.k);if(sp&&!FURN[D.f.k].wall)sp.r=D.f.r;D.sp=sp;showFGhost(sp,D.f.k);setCount(sp?'Move '+FURN[D.f.k].n:'');}
+  else{const sp=furnSpot(cx,cy,FM.sel);D.sp=sp;showFGhost(sp,FM.sel,!!sp);setCount(sp?FURN[FM.sel].n+' \u00b7 1 piece \u00b7 release to place':(FURN[FM.sel].wall?'Point at a wall':'Nothing here'));}}
+function furnUp(cx,cy,commit){const D=FM.down;FM.down=null;hideFGhost();setCount('');if(!D)return;if(D.f)D.f.g.visible=true;if(!commit)return;
+  if(D.f){if(!D.moved)furnRotate(D.f);else if(D.sp)furnMoveTo(D.f,D.sp.x,D.sp.y,D.sp.z,D.sp.r);return;}
+  if(D.sp)furnAdd(FM.sel,D.sp.x,D.sp.y,D.sp.z,D.sp.r);else toast(FURN[FM.sel].wall?'Tap a wall to hang it':'Tap the ground or a floor');}
+// erase tool also removes furniture under the drag rectangle (or the tapped piece)
+const _fCommit=bmCommit;bmCommit=function(cx,cy){const d=BM.drag;if(BM.tool==='erase'&&d){const tap=furnAtScreen(cx,cy);let list=[];
+  if(d.s){const p=planeCell(cx,cy,d.s.y)||{x:d.s.hit.x,z:d.s.hit.z};const r=rectOf({x:d.s.hit.x,z:d.s.hit.z},p);for(const f of FM.items.values())if(f.x>=r[0]&&f.x<=r[2]&&f.z>=r[1]&&f.z<=r[3]&&Math.abs(f.y-d.s.y)<=8)list.push(f);}
+  if(tap&&!list.includes(tap.f))list.push(tap.f);if(list.length){furnRemove(list);return list.length;}}return _fCommit(cx,cy);};
+const _fUndo=bmUndo;bmUndo=function(){const e=BM.undo[BM.undo.length-1];if(e&&e.f){BM.undo.pop();for(let i=e.f.length-1;i>=0;i--)furnSet(e.f[i].id,e.f[i].b);BM.redo.push(e);sfx('break');toast('Undo '+e.label);updBMBtns();return true;}return _fUndo();};
+const _fRedo=bmRedo;bmRedo=function(){const e=BM.redo[BM.redo.length-1];if(e&&e.f){BM.redo.pop();for(const c of e.f)furnSet(c.id,c.a);BM.undo.push(e);sfx('place');toast('Redo '+e.label);updBMBtns();return true;}return _fRedo();};
+// ---- UI: FURNITURE tab + catalog ----
+function renderFurnCat(){const L=$('bmFurnCat');L.innerHTML='';const tabs=document.createElement('div');tabs.className='fctabs';
+  for(const c of FCATS){const b=document.createElement('button');b.textContent=c;b.className=c===FM.cat?'on':'';bindTap(b,()=>{FM.cat=c;renderFurnCat();});tabs.appendChild(b);}L.appendChild(tabs);
+  const gr=document.createElement('div');gr.className='fcgrid';for(const k in FURN){if(FURN[k].c!==FM.cat)continue;const b=document.createElement('button');b.className='fci'+(k===FM.sel?' sel':'');b.innerHTML=`<img src="${furnIcon(k)}"><span>${esc(FURN[k].n)}</span>`;
+    bindTap(b,()=>{FM.sel=k;L.style.display='none';updBMBtns();toast(FURN[k].n+': tap '+(FURN[k].wall?'a wall':'the floor')+' to place');});gr.appendChild(b);}L.appendChild(gr);}
+const fIcons={};function furnIcon(k){if(fIcons[k])return fIcons[k];const c=document.createElement('canvas');c.width=c.height=56;const g=c.getContext('2d');const d=FURN[k];
+  let mx=16,mz=16,my=16;for(const q of d.b){mx=Math.max(mx,q[3]);my=Math.max(my,q[4]);mz=Math.max(mz,q[5]);}const s=40/Math.max(mx+mz*.5,my+mz*.5);
+  const hex=v=>'#'+v.toString(16).padStart(6,'0');const sh=(v,f)=>{const r=Math.min(255,((v>>16)&255)*f),gg=Math.min(255,((v>>8)&255)*f),b=Math.min(255,(v&255)*f);return `rgb(${r|0},${gg|0},${b|0})`;};
+  const bs=d.b.slice().sort((a,b)=>(a[2]+a[5])-(b[2]+b[5])||(a[1]-b[1]));
+  for(const q of bs){const [x0,y0,z0,x1,y1,z1,col]=q;const X=x=>6+x*s,Y=y=>50-y*s;const ox=(16-z1)*.5*s,oy=-(16-z1)*.5*s*0; // simple cabinet projection
+    const px=X(x0)+z0*.4*s*0,dz=(z1-z0)*.45*s;g.fillStyle=sh(col,.75);g.fillRect(X(x0)+(16-z1)*.0,Y(y1)-dz*0,(x1-x0)*s,(y1-y0)*s);
+    g.fillStyle=sh(col,1.05);g.beginPath();g.moveTo(X(x0),Y(y1));g.lineTo(X(x0)+dz,Y(y1)-dz);g.lineTo(X(x1)+dz,Y(y1)-dz);g.lineTo(X(x1),Y(y1));g.fill();
+    g.fillStyle=sh(col,.55);g.beginPath();g.moveTo(X(x1),Y(y1));g.lineTo(X(x1)+dz,Y(y1)-dz);g.lineTo(X(x1)+dz,Y(y0)-dz);g.lineTo(X(x1),Y(y0));g.fill();}
+  return fIcons[k]=c.toDataURL();}
+(function(){const bar=$('bmBar');const fb=document.createElement('button');fb.dataset.t='furn';fb.innerHTML='&#128715;<small>FURNITURE</small>';bar.insertBefore(fb,$('bmUndo'));bindTap(fb,()=>setTool('furn'));
+  const opt=$('bmOpt');const w=document.createElement('span');w.id='bmFurnW';w.innerHTML=`<button id="bmFurnBtn"></button><b id="bmFurnNm"></b><button id="bmFRot">&#10227; Rotate</button>`;opt.insertBefore(w,$('bmHint'));
+  const cat=document.createElement('div');cat.id='bmFurnCat';$('hud').appendChild(cat);
+  bindTap($('bmFurnBtn'),()=>{const v=cat.style.display==='block';if(!v)renderFurnCat();cat.style.display=v?'none':'block';});
+  bindTap($('bmFRot'),()=>{const f=FM.last&&FM.items.get(FM.last);if(f)furnRotate(f);else{FM.r=(FM.r+1)&3;toast('New pieces face '+['south','east','north','west'][FM.r]);}});})();
+const _fBtns=updBMBtns;updBMBtns=function(){_fBtns();const f=BM.tool==='furn';if(f)$('bmMatW').style.display='none';$('bmFurnW').style.display=f?'':'none';if(f){$('bmFurnBtn').style.backgroundImage=`url(${furnIcon(FM.sel)})`;$('bmFurnNm').textContent=FURN[FM.sel].n;$('bmHint').textContent='Tap to place \u00b7 tap a piece to rotate \u00b7 drag it to move';}else $('bmFurnCat').style.display='none';};
+const _fSetTool=setTool;setTool=function(t){_fSetTool(t);if(t==='furn'){FM.last=null;$('bmFurnCat').style.display='block';renderFurnCat();}};
+const _fExit=exitBuild;exitBuild=function(i){$('bmFurnCat').style.display='none';hideFGhost();FM.down=null;return _fExit(i);};
+// ---- play mode: use furniture ----
+function furnUse(f){const d=FURN[f.k];G.furnUses=(G.furnUses||0)+1;switch(d.use){
+  case 'bed':useBed();break;
+  case 'sit':G.sit={id:f.id,yaw:G.p.yaw};toast('Sitting on the '+d.n.toLowerCase()+' \u00b7 move to stand up');sfx('click');break;
+  case 'tv':f.on=!f.on;toast(f.on?'TV on: Blockcraft News':'TV off');sfx('click');break;
+  case 'lamp':f.on=!f.on;f.g.traverse(o=>{if(o.material&&o.material.isMeshBasicMaterial&&o.material!==ghostFMat){}});toast(f.on?'Lamp on':'Lamp off');break;
+  case 'fridge':{if((G.fridgeT||0)>performance.now()){toast('The fridge is empty for a moment');break;}G.fridgeT=performance.now()+20000;G.hp=Math.min(20,G.hp+6);if(typeof G.food==='number')G.food=20;const fd=['beef_c','fish_c','chicken_c','pork_c'][Math.random()*4|0];addInv(BN[fd],1);updHotbar();toast('Snack! +3 hearts and 1 '+B[BN[fd]].name);sfx('buy');break;}
+  case 'stove':openCook({x:f.x,y:f.y,z:f.z,b:BN.furnace});break;
+  case 'toilet':G.sit={id:f.id,yaw:G.p.yaw};toast('*flush*');sfx('door');break;
+  case 'sink':toast('You wash your hands. Squeaky clean!');sfx('click');break;
+  case 'tub':G.hp=Math.min(20,G.hp+2);toast('A nice relaxing bath (+1 heart)');break;
+  case 'clock':{const h=Math.floor(((G.time+.25)%1)*24),m=Math.floor((((G.time+.25)%1)*24-h)*60);toast('It is '+String(h).padStart(2,'0')+':'+String(m).padStart(2,'0'));break;}
+  default:toast(d.n);}return true;}
+const _fTap=tapAction;tapAction=function(){if(G.mode==='play'&&!BM.on&&!G.sit){const o=new THREE.Vector3(G.p.x,G.p.y+1.62,G.p.z),dd=lookDir();const h=furnAtRay(o,new THREE.Vector3(dd[0],dd[1],dd[2]),4.5);
+    if(h){const t=raycast(4.5);if(!t||h.t<=t.t+.5){furnUse(h.f);return;}}}if(G.sit){standUp();return;}_fTap();};
+function standUp(){const s=G.sit;G.sit=null;if(!s)return;const f=FM.items.get(s.id);if(f){G.p.x=f.x+.5;G.p.z=f.z+.5;G.p.y=openAbove(G.p.x,f.y,G.p.z);G.p.vy=0;G.p.fallY=G.p.y;}}
+const _fUpdP=updatePlayer;updatePlayer=function(dt){if(G.sit&&!BM.on&&!BM.tw){const f=FM.items.get(G.sit.id);const K=IN.keys;if(!f||Math.hypot(IN.mx,IN.mz)>.3||IN.jump||K.KeyW||K.KeyA||K.KeyS||K.KeyD||K.Space){standUp();return _fUpdP(dt);}
+    const sy=(FURN[f.k].sy||7)/16;G.p.x=f.x+.5;G.p.z=f.z+.5;G.p.y=f.y;G.p.vx=G.p.vy=G.p.vz=0;G.p.fallY=f.y;camera.position.set(f.x+.5,f.y+sy+1.05,f.z+.5);camera.rotation.set(G.p.pitch,G.p.yaw,0);return;}_fUpdP(dt);};
+// TV screen + lamp animation
+const tvCols=[0x3a7ad8,0x48c060,0xe0b030,0xd04848,0x9a50d0];
+const _fLife=updateLife;updateLife=function(dt){_fLife(dt);const t=performance.now()/1000;for(const f of FM.items.values()){const s=f.g.userData.screen;if(s)s.material.color.setHex(f.on?tvCols[Math.floor(t*1.5+f.id)%tvCols.length]:0x30343c);}};
+// ---- saves: furniture rides along as an extra field (older versions ignore it) ----
+const _fSer=serialize;serialize=function(){const s=_fSer();s.furn=[...FM.items.values()].map(f=>[f.k,f.x,f.y,f.z,f.r]);return s;};
+const _fStart=startWorld;startWorld=function(a,b){const s=b?null:slotMeta(a);furnClear();const r=_fStart(a,b);if(s&&Array.isArray(s.furn)){for(const q of s.furn)if(FURN[q[0]])furnSet(FM.nid++,{k:q[0],x:q[1],y:q[2],z:q[3],r:q[4]|0});saveWorld();}return r;};
+const _fGoT=goTitle;goTitle=function(){_fGoT();furnClear();};
+Object.assign(window.__bc,{startWorld:(a,b)=>startWorld(a,b),goTitle:()=>goTitle(),saveWorld:()=>saveWorld(),FURN,FM,furnAdd,furnRotate,furnRemove,furnUse,furnAtScreen,furnSpot,standUp,serialize:()=>serialize(),bmUndo:()=>bmUndo(),bmRedo:()=>bmRedo(),setTool:t=>setTool(t)});
+// ===== v1.6.1: easy AUTO-ROOF (tap a room -> footprint + height detected, ghost preview, Confirm/Cancel, styles, overhang, ridge rotate) =====
+const BC_VERSION='1.6.1';window.BC_VERSION=BC_VERSION;
+BM.roof='gable';BM.over=true;BM.rflip=false;BM.pend=null;
+const RSTYLES=['gable','hip','flat'],RSN={gable:'Gabled',hip:'Hip',flat:'Flat'};
+const isWallB=b=>b>0&&(SOLID[b]||B[b].door)&&builtB(b);
+// flood-fill the open floor of a room at level y; returns {mask:Set "x,z", ring:[[x,z]], box} or null if it leaks
+function roomFootprint(x,y,z){const seen=new Set(),q=[[x,z]],inside=[];seen.add(x+','+z);
+  while(q.length){const [a,c]=q.pop();inside.push([a,c]);if(inside.length>1200||Math.abs(a-x)>40||Math.abs(c-z)>40)return null;
+    for(const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]){const nx=a+dx,nz=c+dz,k=nx+','+nz;if(seen.has(k))continue;const b=getB(nx,y,nz);if(b<0)return null;
+      if(isWallB(b)){continue;}if(b>0&&SOLID[b])return null;seen.add(k);q.push([nx,nz]);}}
+  const mask=new Set(inside.map(p=>p[0]+','+p[1])),ring=[];
+  for(const [a,c] of inside)for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){const k=(a+dx)+','+(c+dz);if(mask.has(k))continue;if(isWallB(getB(a+dx,y,c+dz))){mask.add(k);ring.push([a+dx,c+dz]);}}
+  if(!ring.length)return null;let box=[1e9,1e9,-1e9,-1e9];for(const k of mask){const [a,c]=k.split(',').map(Number);box=[Math.min(box[0],a),Math.min(box[1],c),Math.max(box[2],a),Math.max(box[3],c)];}
+  return {mask,ring,box,y};}
+function rectFoot(r,y){const mask=new Set(),ring=[];for(let z=r[1];z<=r[3];z++)for(let x=r[0];x<=r[2];x++){mask.add(x+','+z);if(x===r[0]||x===r[2]||z===r[1]||z===r[3])ring.push([x,z]);}return {mask,ring,box:r.slice(),y,rect:true};}
+// find the room under a tap: flood fill first, else the old 4-way scan (bounding box)
+function autoRoom(h){if(!h)return null;const offs=[[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1],[2,0],[-2,0],[0,2],[0,-2]];
+  for(const [ox,oz] of offs)for(let y=h.y+1;y>=h.y-6;y--){const x=h.x+ox,z=h.z+oz;if(isSolidAt(x,y,z)||!isSolidAt(x,y-1,z))continue;const f=roomFootprint(x,y,z);if(f){f.auto=true;return f;}}
+  const f=findRoom(h);return f?Object.assign(rectFoot(f.r,f.y),{auto:true,fallback:true}):null;}
+// build roof cells for any footprint
+function roofPlan(F,style,id,over,flip){const {mask,box}=F;const has=(x,z)=>mask.has(x+','+z);let top=-1,gm=0;
+  const ring=F.ring.length?F.ring:[...mask].map(k=>k.split(',').map(Number));
+  for(const [x,z] of ring){const t=topBuilt(x,z,F.y);if(t>top){top=t;gm=getB(x,t,z);}}
+  if(top<0){top=F.y-1;gm=BM.mat;}if(!gm||!B[gm]||B[gm].door||B[gm].key==='glass'||!SOLID[gm])gm=BM.mat;
+  let alongX=(box[2]-box[0])>=(box[3]-box[1]);if(flip)alongX=!alongX;
+  const run=(x,z,dx,dz)=>{let n=0;while(n<40&&has(x+dx*(n+1),z+dz*(n+1)))n++;return n;};
+  const K=new Map();for(const k of mask){const [x,z]=k.split(',').map(Number);let v=0;
+    if(style==='gable')v=alongX?Math.min(run(x,z,0,1),run(x,z,0,-1)):Math.min(run(x,z,1,0),run(x,z,-1,0));
+    else if(style==='hip')v=Math.min(run(x,z,0,1),run(x,z,0,-1),run(x,z,1,0),run(x,z,-1,0));
+    K.set(k,Math.min(v,14));}
+  const c=[];const put=(x,z,k)=>c.push([x,top+1+k,z,id]);
+  for(const [k,v] of K){const [x,z]=k.split(',').map(Number);put(x,z,v);
+    if(style==='gable'&&v>0){const [ax,az]=alongX?[1,0]:[0,1];if(!has(x+ax,z+az)||!has(x-ax,z-az))for(let j=1;j<=v;j++)c.push([x,top+j,z,gm]);}}
+  if(over){const done=new Set();for(const k of mask){const [x,z]=k.split(',').map(Number);for(let dx=-1;dx<=1;dx++)for(let dz=-1;dz<=1;dz++){const nx=x+dx,nz=z+dz,nk=nx+','+nz;if(has(nx,nz)||done.has(nk))continue;done.add(nk);
+      let v=0;if(style==='gable'){const [ax,az]=alongX?[1,0]:[0,1];for(const s of [1,-1]){const mk=(nx+ax*s)+','+(nz+az*s);if(K.has(mk))v=Math.max(v,K.get(mk));}}put(nx,nz,v);}}}
+  let maxK=0;for(const v of K.values())maxK=Math.max(maxK,v);
+  return {c,top,maxK,alongX};}
+function roofLabel(F){const w=F.box[2]-F.box[0]+1,d=F.box[3]-F.box[1]+1;const shape=F.rect?'':(F.mask.size<w*d?' L/odd shape':'');return `${w} x ${d}${shape}${F.fallback?' (box)':''}`;}
+function planPend(){const P=BM.pend;if(!P)return;const R=roofPlan(P.F,BM.roof,BM.rmat,BM.over,BM.rflip);P.cells=effective(R.c);P.R=R;}
+function showPend(){const P=BM.pend;if(!P)return;planPend();showGhost(P.cells,false);ghostMat.opacity=.6;
+  setCount(`Roof ${roofLabel(P.F)} \u00b7 ${RSN[BM.roof]} \u00b7 on top of wall y${P.R.top} \u00b7 ${P.cells.length} blocks`);$('bmRConf').style.display='flex';updBMBtns();}
+function clearPend(){BM.pend=null;const e=$('bmRConf');if(e)e.style.display='none';if($('bmRoofS'))updBMBtns();}
+function roofConfirm(){const P=BM.pend;if(!P)return 0;planPend();const cells=P.cells;clearPend();_rHide();if(!cells.length){toast('Roof is already there');return 0;}const n=applyCells(cells,'Roof');toast('Roof placed');return n;}
+function roofCancel(){if(!BM.pend)return;clearPend();_rHide();toast('Roof cancelled');}
+// footprint for a gesture: tap -> auto room; drag -> rectangle (old behaviour)
+function roofFootFor(s,cx,cy){if(!s)return null;const p=planeCell(cx,cy,s.y)||{x:s.x,z:s.z};const r=rectOf(s,{x:p.x,z:p.z});
+  if(r[0]===r[2]&&r[1]===r[3])return autoRoom(s.hit);return rectFoot(r,s.y);}
+const _rTC=toolCells;toolCells=function(s,cx,cy){if(BM.tool!=='roof')return _rTC(s,cx,cy);const F=roofFootFor(s,cx,cy);if(!F)return [];BM.dims=roofLabel(F)+' '+RSN[BM.roof];return roofPlan(F,BM.roof,BM.rmat,BM.over,BM.rflip).c;};
+const _rHide=hideGhost;hideGhost=function(){if(BM.pend&&BM.on&&BM.tool==='roof'){showPend();return;}ghostMat.opacity=.55;_rHide();};
+const _rCommit=bmCommit;bmCommit=function(cx,cy){const d=BM.drag;if(BM.tool!=='roof'||!d)return _rCommit(cx,cy);const F=roofFootFor(d.s,cx,cy);
+  if(!F){toast(BM.pend?'No room there - still showing the last roof':'Tap inside a room (or drag over it)');return 0;}
+  BM.pend={F};planPend();if(!BM.pend.cells.length){clearPend();toast('Roof is already there');return 0;}if(F.fallback)toast('Room has a gap - using its bounding box');return 0;};
+const _rSet=setTool;setTool=function(t){clearPend();_rSet(t);};
+const _rExit=exitBuild;exitBuild=function(i){clearPend();return _rExit(i);};
+const _rUndo=bmUndo;bmUndo=function(){if(BM.pend){roofCancel();return true;}return _rUndo();};
+const _rRedo=bmRedo;bmRedo=function(){clearPend();_rHide();return _rRedo();};
+function roofSet(k,v){BM[k]=v;updBMBtns();if(BM.pend)showPend();}
+(function(){const w=$('bmRoofW');w.innerHTML=`Style <button id="bmRoofS">Gabled</button><button id="bmRoofO">Overhang</button><button id="bmRoofR" title="Turn the ridge">&#10227; Ridge</button>`;
+  const cf=document.createElement('div');cf.id='bmRConf';cf.innerHTML=`<button id="bmRYes">&#10004; Place roof</button><button id="bmRNo">&#10006; Cancel</button>`;$('hud').appendChild(cf);
+  bindTap($('bmRoofS'),()=>roofSet('roof',RSTYLES[(RSTYLES.indexOf(BM.roof)+1)%3]));bindTap($('bmRoofO'),()=>roofSet('over',!BM.over));bindTap($('bmRoofR'),()=>roofSet('rflip',!BM.rflip));
+  bindTap($('bmRYes'),()=>roofConfirm());bindTap($('bmRNo'),()=>roofCancel());
+  const st=document.createElement('style');st.textContent=`#bmRConf{display:none;position:absolute;right:calc(66*var(--u));bottom:calc(120*var(--u));gap:calc(10*var(--u))}
+#bmRConf button{font-family:inherit;font-weight:bold;font-size:calc(17*var(--u));padding:calc(8*var(--u)) calc(16*var(--u));border-radius:calc(10*var(--u));color:#fff;border:calc(2*var(--u)) solid rgba(255,255,255,.6)}
+#bmRYes{background:#2e8a3a}#bmRNo{background:#8a2e2e}#bmRoofO.on{background:#2e8a3a!important}`;document.head.appendChild(st);})();
+const _rBtns=updBMBtns;updBMBtns=function(){_rBtns();const s=$('bmRoofS');if(!s)return;s.textContent=RSN[BM.roof];const o=$('bmRoofO');o.textContent=BM.over?'Overhang: On':'Overhang: Off';o.classList.toggle('on',BM.over);
+  $('bmRoofR').style.display=BM.roof==='gable'?'':'none';if(BM.tool==='roof')$('bmHint').textContent=BM.pend?'Tap \u2714 Place or \u2716 Cancel \u00b7 change style first':'Tap inside a room \u00b7 or drag over it';};
+const _rBack=window.bcBack;window.bcBack=function(){if(BM.on&&BM.pend&&!stack.length){roofCancel();return true;}return _rBack();};window.dhBack=window.bcBack;
+Object.assign(window.__bc,{roomFootprint,autoRoom,roofPlan,roofConfirm,roofCancel,BC_VERSION,toolCells:(a,b,c)=>toolCells(a,b,c),bmCommit:(a,b)=>bmCommit(a,b),setTool:t=>setTool(t),bmUndo:()=>bmUndo(),bmRedo:()=>bmRedo()});
+updBMBtns();

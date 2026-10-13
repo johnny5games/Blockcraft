@@ -1,4 +1,4 @@
-const V='blockcraft-1.5-pwa-1';
+const V='blockcraft-1.6.1-pwa-1';
 const FILES=['./','index.html','style.css','pwa.css','pwa.js','game.js','three.min.js','manifest.json','apple-touch-icon.png','favicon.png','icons/icon-180.png','icons/icon-192.png','icons/icon-512.png','three-LICENSE.txt'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(V).then(c=>c.addAll(FILES)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
