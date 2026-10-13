@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>👀</title>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}img{width:100vw;height:100vh;object-fit:contain;display:block}</style></head>
+<body><img src="ape-finger.jpg" alt="Two apes staring at each other">
+<script>
+let done=0;function laugh(){if(done)return;try{const A=new(window.AudioContext||window.webkitAudioContext)();if(A.state==='suspended')A.resume();const t=A.currentTime;
+[[0,220,90],[.25,180,60],[.5,300,40],[.7,90,60]].forEach(([d,f1,f2])=>{const o=A.createOscillator(),g=A.createGain();o.type='sawtooth';
+o.frequency.setValueAtTime(f1,t+d);o.frequency.exponentialRampToValueAtTime(f2,t+d+.25);g.gain.setValueAtTime(.3,t+d);g.gain.exponentialRampToValueAtTime(.001,t+d+.25);
+o.connect(g).connect(A.destination);o.start(t+d);o.stop(t+d+.26)});if(A.state==='running')done=1}catch(e){}}
+window.addEventListener('load',laugh);['touchstart','pointerdown','click','keydown'].forEach(e=>document.addEventListener(e,laugh,{passive:true}));
+</script></body></html>
