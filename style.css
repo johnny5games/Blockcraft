@@ -32,6 +32,9 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;font-f
 .slot span{position:absolute;right:calc(2*var(--u));bottom:0;font-size:calc(11*var(--u));font-weight:bold;text-shadow:0 0 2px #000,0 0 2px #000}
 .slot.empty{opacity:.45}
 #lavaFx{position:absolute;inset:0;background:radial-gradient(transparent 30%,rgba(255,80,0,.8));opacity:0;transition:opacity .2s}
+#fireFx{position:absolute;inset:0;pointer-events:none;opacity:0;background:linear-gradient(to top,rgba(255,120,0,.75),rgba(255,60,0,.25) 35%,transparent 60%),radial-gradient(transparent 45%,rgba(255,90,0,.45));animation:fireflick .18s infinite alternate}
+@keyframes fireflick{from{filter:brightness(1)}to{filter:brightness(1.35)}}
+#boomFx{position:absolute;inset:0;pointer-events:none;opacity:0;background:radial-gradient(rgba(255,255,230,.95),rgba(255,170,60,.6) 60%,rgba(255,90,0,.3))}
 #dmgFx{position:absolute;inset:0;background:radial-gradient(transparent 40%,rgba(255,0,0,.6));opacity:0}
 .floatc{position:absolute;left:50%;top:42%;transform:translateX(-50%);color:#ffd84a;font-weight:bold;font-size:calc(20*var(--u));text-shadow:0 1px 3px #000;animation:fl 1.1s forwards}
 @keyframes fl{to{transform:translate(-50%,calc(-50*var(--u)));opacity:0}}
@@ -162,3 +165,8 @@ input{flex:1;font-size:calc(16*var(--u));padding:calc(5*var(--u));background:#11
 .fci.sel{border-color:#ffd84a}
 #bmFurnBtn{width:calc(38*var(--u));height:calc(38*var(--u))!important;background-color:#222!important;background-position:center;background-size:90%;background-repeat:no-repeat;border-color:#ffd84a!important}
 #bmBar button{width:calc(56*var(--u))}
+/* v1.7.1 damage feedback */
+#hearts.hit{animation:hpshake .4s}
+@keyframes hpshake{0%,100%{transform:translateX(0);filter:none}20%{transform:translateX(-4px);filter:brightness(1.8) drop-shadow(0 0 4px #f30)}60%{transform:translateX(4px)}}
+.floatc.dmgn{color:#ff5a2a;top:30%;font-size:calc(26*var(--u))}
+#ashFx{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:6;background:radial-gradient(ellipse at center,rgba(40,36,34,.35) 0%,rgba(20,18,17,.9) 100%);transition:opacity .15s}
